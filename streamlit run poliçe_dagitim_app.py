@@ -2,90 +2,86 @@ import streamlit as st
 from datetime import datetime, timedelta
 import pandas as pd
 from io import BytesIO
+import locale
 
-st.set_page_config(page_title="Poliçe Gider Dağılımı", layout="centered")
-st.title("📆 Poliçe Gider Dağılım Hesaplayıcı")
-st.markdown("Başlangıç tarihini ve tutarı gir, sistem yıl ve aya göre dağıtım yapsın. %30 KKEG içerir.")
+locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')  # Formatlama için
 
-# Girdi
-tarih_input = st.date_input("📅 Poliçe Başlangıç Tarihi", datetime.today())
-tutar_input = st.number_input("💰 Toplam Poliçe Tutarı (TL)", min_value=0.0, value=10000.0)
+st.title("📆 Poliçe Muhasebe Dağılımı")
+st.markdown("Başlangıç ve bitiş tarihi ile prim gir, sistem aylık ve dönemsel dağılımları hazırlar.")
 
-kkeg_orani = 0.30
-gider_orani = 1 - kkeg_orani
+# Girişler
+bas_tarih = st.date_input("Başlangıç Tarihi", datetime.today())
+bit_tarih = st.date_input("Bitiş Tarihi", bas_tarih + timedelta(days=364))
+tutar = st.number_input("Toplam Poliçe Tutarı (TL)", min_value=0.0, value=31592.62)
 
-if st.button("📊 Hesapla"):
-    gunluk_tutar = tutar_input * gider_orani / 365
-    kalan_tutar = tutar_input * gider_orani
-    tarih = tarih_input
-    toplam_gun = 0
-    rows = []
+if st.button("Hesapla"):
+    gun_sayisi = (bit_tarih - bas_tarih).days + 1
+    gunluk = tutar / gun_sayisi
 
-    # Vergi dönemi
     donemler = {
-        1: [1, 2, 3],
-        2: [4, 5, 6],
-        3: [7, 8, 9],
-        4: [10, 11, 12]
+        1: [1,2,3], 2: [4,5,6],
+        3: [7,8,9], 4: [10,11,12]
     }
+    def donem_adi(ay):
+        for d, ayl in donemler.items():
+            if ay in ayl:
+                return d
 
-    def get_donem(ay):
-        for key, val in donemler.items():
-            if ay in val:
-                return f"{key}. Dönem"
-        return "?"
-
-    while kalan_tutar > 0 and toplam_gun < 365:
-        next_month = tarih.month % 12 + 1
-        year = tarih.year + (1 if tarih.month == 12 else 0)
-        ay_sonu = datetime(year, next_month, 1) - timedelta(days=1)
-
-        gun_sayisi = (ay_sonu - tarih).days + 1
-        if toplam_gun + gun_sayisi > 365:
-            gun_sayisi = 365 - toplam_gun
-
-        tutar = round(gun_sayisi * gunluk_tutar, 2)
-        vergi_donemi = get_donem(tarih.month)
-        muhasebe_hesabi = "770" if tarih.year == tarih_input.year else "280"
-
+    rows = []
+    dt = bas_tarih
+    while dt <= bit_tarih:
+        ay_son = datetime(dt.year, dt.month % 12 +1,1) - timedelta(days=1)
+        ay_bit = min(ay_son, bit_tarih)
+        gun = (ay_bit - dt).days +1
+        aylik_tutar = round(gun * gunluk,2)
+        d = donem_adi(dt.month)
+        hesap = "740/760/770" if dt.month == bas_tarih.month and dt.year == bas_tarih.year else ("180" if dt.year == bas_tarih.year else "280")
         rows.append({
-            "Yıl": tarih.year,
-            "Ay": tarih.strftime("%B"),
-            "Tarih (Ay Başlangıcı)": tarih.strftime("%d.%m.%Y"),
-            "Gün Sayısı": gun_sayisi,
-            "Tutar (TL)": f"{tutar:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-            "Geçici Vergi Dönemi": vergi_donemi,
-            "Muhasebe Hesabı": muhasebe_hesabi
+            "Hesap Adı": hesap,
+            "Dönemler": f"{dt.year} / {d} Dönem",
+            "Aylar": dt.strftime("%B"),
+            "Gün Sayısı": gun,
+            "Aylık Bedel": aylik_tutar,
+            "Dönemsel Bedel": 0.00
         })
+        dt = ay_bit + timedelta(days=1)
 
-        toplam_gun += gun_sayisi
-        kalan_tutar -= tutar
-        tarih = ay_sonu + timedelta(days=1)
+    # Şimdi dönemsel toplamları ayarla
+    df = pd.DataFrame(rows)
+    df["Dönemsel Bedel"] = df.groupby("Dönemler")["Aylık Bedel"].transform(lambda x: round(x.sum(),2))
+    df.loc[df.groupby("Dönemler").head(1).index, "Dönemsel Bedel"] = df.groupby("Dönemler")["Dönemsel Bedel"].first()
+    df["Aylık Bedel"] = df["Aylık Bedel"].map(lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    df["Dönemsel Bedel"] = df["Dönemsel Bedel"].map(lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-    # %30 KKEG
-    rows.append({
-        "Yıl": tarih_input.year,
-        "Ay": "-",
-        "Tarih (Ay Başlangıcı)": tarih_input.strftime("%d.%m.%Y"),
+    rows_list = df.to_dict('records')
+
+    # KKEG satırı
+    kkeg = round(tutar * 0.30,2)
+    rows_list.append({
+        "Hesap Adı": "689",
+        "Dönemler": "K.K.E.G.",
+        "Aylar": "-",
         "Gün Sayısı": "-",
-        "Tutar (TL)": f"{tutar_input * kkeg_orani:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-        "Geçici Vergi Dönemi": "KKEG",
-        "Muhasebe Hesabı": "689"
+        "Aylık Bedel": f"{kkeg:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        "Dönemsel Bedel": ""
+    })
+    rows_list.append({
+        "Hesap Adı": "Sigorta Acentesi",
+        "Dönemler": "",
+        "Aylar": "",
+        "Gün Sayısı": "",
+        "Aylık Bedel": f"{tutar:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        "Dönemsel Bedel": ""
     })
 
-    df = pd.DataFrame(rows)
-    st.success("✅ Gider dağılımı başarıyla oluşturuldu.")
-    st.dataframe(df, use_container_width=True)
+    df2 = pd.DataFrame(rows_list)
+    st.dataframe(df2, use_container_width=True)
 
-    # Excel çıktısı
+    # Excel indirme
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name="Dağılım")
+        df2.to_excel(writer, index=False, sheet_name="Dağılım")
     output.seek(0)
-
-    st.download_button(
-        label="⬇️ Excel Olarak İndir",
-        data=output,
-        file_name="police_gider_dagilimi.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button("⬇️ Excel İndir", data=output,
+                       file_name="police_dagitimi.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
